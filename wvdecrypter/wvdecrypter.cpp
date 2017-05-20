@@ -732,7 +732,7 @@ bool WV_CencSingleSampleDecrypter::SendSessionMessage()
           decrypter_caps_.hdcpLimit = atoi((response.c_str() + tokens[i + 1].start));
       }
       // Find license key
-      if (jsonVals.size() > 1)
+      if (jsonVals.size() > 0)
       {
         for (i = 0; i < numTokens; ++i)
           if (tokens[i].type == JSMN_STRING && tokens[i].size == 1 && jsonVals[0].size() == tokens[i].end - tokens[i].start
