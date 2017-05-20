@@ -518,7 +518,7 @@ start(void *data, const char *el, const char **attr)
           }
           else if (strcmp(el, "ContentProtection") == 0)
           {
-            if (!dash->current_representation_->pssh_set_)
+            if (!dash->current_representation_->pssh_set_ || dash->current_representation_->pssh_set_ == 0xFF)
             {
               //Mark protected but invalid
               dash->current_representation_->pssh_set_ = 0xFF;
@@ -665,7 +665,7 @@ start(void *data, const char *el, const char **attr)
         }
         else if (strcmp(el, "ContentProtection") == 0)
         {
-          if (!dash->adp_pssh_set_)
+          if (!dash->adp_pssh_set_ || dash->adp_pssh_set_== 0xFF)
           {
             //Mark protected but invalid
             dash->adp_pssh_set_ = 0xFF;
@@ -924,6 +924,7 @@ end(void *data, const char *el)
               {
                 dash->current_pssh_ = "FILE";
                 dash->current_representation_->pssh_set_ = dash->insert_psshset(dash->current_adaptationset_->type_);
+                dash->encryptionState_ |= DASHTree::ENCRYTIONSTATE_SUPPORTED;
               }
               else
               {
