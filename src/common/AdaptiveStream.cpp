@@ -47,13 +47,7 @@ bool AdaptiveStream::download_segment()
   std::string strURL;
   char rangebuf[128], *rangeHeader(0);
 
-  if (current_rep_->flags_ & AdaptiveTree::Representation::STARTTIMETPL)
-  {
-    strURL = current_rep_->url_;
-    sprintf(rangebuf, "%" PRIu64, tree_.base_time_ + current_seg_->range_end_);
-    strURL.replace(strURL.find("{start time}"), 12, rangebuf);
-  }
-  else if (!(current_rep_->flags_ & AdaptiveTree::Representation::SEGMENTBASE))
+  if (!(current_rep_->flags_ & AdaptiveTree::Representation::SEGMENTBASE))
   {
     if (!(current_rep_->flags_ & AdaptiveTree::Representation::TEMPLATE))
     {
@@ -67,10 +61,13 @@ bool AdaptiveStream::download_segment()
       std::string media = current_rep_->segtpl_.media;
       std::string::size_type lenReplace(7);
       std::string::size_type np(media.find("$Number"));
+      uint64_t value(current_seg_->range_end_); //StartNumber
+
       if (np == std::string::npos)
       {
         lenReplace = 5;
-        np = media.find("$Time");
+        np = media.find((current_rep_->flags_ & AdaptiveTree::Representation::STARTTIMETPL) ? "{start time}" : "$Time");
+        value = current_seg_->range_begin_; //Timestamp
       }
       np += lenReplace;
 
@@ -82,7 +79,7 @@ bool AdaptiveStream::download_segment()
       else
         strcpy(fmt, media.substr(np, npe - np).c_str());
 
-      sprintf(rangebuf, fmt, static_cast<uint64_t>(current_seg_->range_end_));
+      sprintf(rangebuf, fmt, value);
       media.replace(np - lenReplace, npe - np + lenReplace + 1, rangebuf);
       strURL = media;
     }
@@ -96,7 +93,10 @@ bool AdaptiveStream::download_segment()
     rangeHeader = rangebuf;
   }
 
-  media_headers_["Range"] = rangeHeader ? rangeHeader : "";
+  if (rangeHeader)
+    media_headers_["Range"] = rangeHeader;
+  else
+    media_headers_.erase("Range");
   return download(strURL.c_str(), media_headers_);
 }
 
