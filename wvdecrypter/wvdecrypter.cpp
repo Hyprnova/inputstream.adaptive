@@ -403,7 +403,7 @@ WV_DRM::WV_DRM(const char* licenseURL, const AP4_DataBuffer &serverCert)
   if (license_url_.find('|') == std::string::npos)
     license_url_ += "|Content-Type=application%2Fx-www-form-urlencoded|widevine2Challenge=B{SSM}&includeHdcpTestKeyInLicense=true|JBlicense;hdcpEnforcementResolutionPixels";
 
-  wv_adapter->QueryOutputProtectionStatus();
+  //wv_adapter->QueryOutputProtectionStatus();
 }
 
 WV_DRM::~WV_DRM()
@@ -541,9 +541,6 @@ const SSD_DECRYPTER::SSD_CAPS &WV_CencSingleSampleDecrypter::GetCapabilities(con
     AP4_UI32 poolid(AddPool());
     fragment_pool_[poolid].key_ = key ? key : reinterpret_cast<const uint8_t*>(keys_.front().keyid.data());
 
-    decrypter_caps_.hdcpVersion = 99;
-    decrypter_caps_.hdcpLimit = 0;
-
     AP4_DataBuffer in, out;
     AP4_UI32 encb[2] = { 1,1 };
     AP4_UI16 clearb[2] = { 5,5 };
@@ -561,7 +558,14 @@ const SSD_DECRYPTER::SSD_CAPS &WV_CencSingleSampleDecrypter::GetCapabilities(con
         else
         {
           use_single_decrypt_ = true;
+          decrypter_caps_.hdcpVersion = 99;
+          decrypter_caps_.hdcpLimit = 0;
         }
+      }
+      else
+      {
+        decrypter_caps_.hdcpVersion = 99;
+        decrypter_caps_.hdcpLimit = 0;
       }
     }
     catch (...) {
