@@ -963,16 +963,16 @@ protected:
 
         if (AP4_FAILED(result = AP4_CencSampleDecrypter::Create(sample_table, algorithm_id, 0, 0, 0, m_singleSampleDecryptor, m_decrypter)))
           return result;
-
-        if (m_singleSampleDecryptor)
-          m_singleSampleDecryptor->SetFragmentInfo(m_poolId, m_defaultKey, m_codecHandler->naluLengthSize, m_codecHandler->extra_data);
       }
     }
 SUCCESS:
+    if (m_singleSampleDecryptor && m_codecHandler)
+      m_singleSampleDecryptor->SetFragmentInfo(m_poolId, m_defaultKey, m_codecHandler->naluLengthSize, m_codecHandler->extra_data);
+
     if (m_observer)
       m_observer->EndFragment(m_streamId);
 
-    return result;
+    return AP4_SUCCESS;
   }
 
 private:
@@ -1013,7 +1013,7 @@ private:
       break;
     }
 
-    if (m_protectedDesc && (m_decrypterCaps.flags & SSD::SSD_DECRYPTER::SSD_CAPS::SSD_ANNEXB_REQUIRED) != 0)
+    if ((m_decrypterCaps.flags & SSD::SSD_DECRYPTER::SSD_CAPS::SSD_ANNEXB_REQUIRED) != 0)
       m_codecHandler->ExtraDataToAnnexB();
   }
 
@@ -1298,7 +1298,8 @@ void Session::DisposeDecrypter()
     return;
 
   for (std::vector<CDMSESSION>::iterator b(cdm_sessions_.begin()), e(cdm_sessions_.end()); b != e; ++b)
-    decrypter_->DestroySingleSampleDecrypter(b->single_sample_decryptor_);
+    if (!b->shared_single_sample_decryptor_)
+      decrypter_->DestroySingleSampleDecrypter(b->single_sample_decryptor_);
 
   typedef void (*DeleteDecryptorInstanceFunc)(SSD::SSD_DECRYPTER *);
   DeleteDecryptorInstanceFunc disposefn((DeleteDecryptorInstanceFunc)dlsym(decrypterModule_, "DeleteDecryptorInstance"));
@@ -1496,25 +1497,40 @@ bool Session::initialize()
       }
 
       CDMSESSION &session(cdm_sessions_[ses]);
-      if (decrypter_ && init_data.GetDataSize() >= 4 && (session.single_sample_decryptor_ = decrypter_->CreateSingleSampleDecrypter(init_data, optionalKeyParameter)) != 0)
-      {
-        const char *defkid = adaptiveTree_->psshSets_[ses].defaultKID_.empty() ? nullptr : adaptiveTree_->psshSets_[ses].defaultKID_.data();
+      const char *defkid = adaptiveTree_->psshSets_[ses].defaultKID_.empty() ? nullptr : adaptiveTree_->psshSets_[ses].defaultKID_.data();
+      session.single_sample_decryptor_ = nullptr;
+      session.shared_single_sample_decryptor_ = false;
 
-        cdm_sessions_[ses].decrypter_caps_ = decrypter_->GetCapabilities(
-          cdm_sessions_[ses].single_sample_decryptor_,
+      if (decrypter_ && defkid)
+      {
+        for (unsigned int i(0); i < ses; ++i)
+          if (decrypter_ && decrypter_->HasLicenseKey(cdm_sessions_[i].single_sample_decryptor_, (const uint8_t *)defkid))
+          {
+            session.single_sample_decryptor_ = cdm_sessions_[i].single_sample_decryptor_;
+            session.shared_single_sample_decryptor_ = true;
+          }
+      }
+
+      if (decrypter_ && init_data.GetDataSize() >= 4 && (session.single_sample_decryptor_
+        || (session.single_sample_decryptor_ = decrypter_->CreateSingleSampleDecrypter(init_data, optionalKeyParameter)) != 0))
+      {
+
+        session.decrypter_caps_ = decrypter_->GetCapabilities(
+          session.single_sample_decryptor_,
           (const uint8_t *)defkid,
           adaptiveTree_->psshSets_[ses].media_);
 
-        if (cdm_sessions_[ses].decrypter_caps_.flags & SSD::SSD_DECRYPTER::SSD_CAPS::SSD_SECURE_PATH)
+        if (session.decrypter_caps_.flags & SSD::SSD_DECRYPTER::SSD_CAPS::SSD_SECURE_PATH)
         {
-          cdm_sessions_[ses].cdm_session_str_ = session.single_sample_decryptor_->GetSessionId();
+          session.cdm_session_str_ = session.single_sample_decryptor_->GetSessionId();
           secure_video_session_ = true;
         }
       }
       else
       {
         kodi::Log(ADDON_LOG_ERROR, "Initialize failed (SingleSampleDecrypter)");
-        cdm_sessions_[ses].single_sample_decryptor_ = nullptr;
+        for (unsigned int i(ses); i < cdm_sessions_.size(); ++i)
+          cdm_sessions_[i].single_sample_decryptor_ = nullptr;
         return false;
       }
     }
@@ -1742,7 +1758,7 @@ std::uint16_t Session::GetVideoHeight() const
 AP4_CencSingleSampleDecrypter *Session::GetSingleSampleDecrypter(std::string sessionId)
 {
   for (std::vector<CDMSESSION>::iterator b(cdm_sessions_.begin() + 1), e(cdm_sessions_.end()); b != e; ++b)
-    if (sessionId == b->cdm_session_str_)
+    if (b->cdm_session_str_ && sessionId == b->cdm_session_str_)
       return b->single_sample_decryptor_;
   return nullptr;
 }
@@ -1893,8 +1909,13 @@ bool CInputStreamAdaptive::Open(INPUTSTREAM& props)
     return false;
   }
 
-  if (manh.empty() && (mpd_url.find("|") != std::string::npos))
-    parseheader(manh, mpd_url.substr(mpd_url.find("|") + 1).c_str());
+  std::string::size_type posHeader(mpd_url.find("|"));
+  if (posHeader != std::string::npos)
+  {
+    manh.clear();
+    parseheader(manh, mpd_url.substr(posHeader + 1).c_str());
+    mpd_url = mpd_url.substr(0, posHeader);
+  }
 
   kodihost.SetProfilePath(props.m_profileFolder);
 
