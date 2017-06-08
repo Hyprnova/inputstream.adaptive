@@ -233,6 +233,8 @@ cdm::Status CdmAdapter::Decrypt(const cdm::InputBuffer& encrypted_buffer,
   //widewine stopps if some seconds (5??) are fetched too fast
   std::this_thread::sleep_for(std::chrono::milliseconds(5));
 
+  std::lock_guard<std::mutex> lock(decrypt_mutex_);
+
   active_buffer_ = decrypted_buffer->DecryptedBuffer();
   cdm::Status ret = cdm_->Decrypt(encrypted_buffer, decrypted_buffer);
   active_buffer_ = 0;
@@ -264,6 +266,7 @@ void CdmAdapter::ResetDecoder(cdm::StreamType decoder_type)
 cdm::Status CdmAdapter::DecryptAndDecodeFrame(const cdm::InputBuffer& encrypted_buffer,
   cdm::VideoFrame* video_frame)
 {
+  std::lock_guard<std::mutex> lock(decrypt_mutex_);
   cdm::Status ret = cdm_->DecryptAndDecodeFrame(encrypted_buffer, video_frame);
   active_buffer_ = 0;
   return ret;
@@ -272,6 +275,7 @@ cdm::Status CdmAdapter::DecryptAndDecodeFrame(const cdm::InputBuffer& encrypted_
 cdm::Status CdmAdapter::DecryptAndDecodeSamples(const cdm::InputBuffer& encrypted_buffer,
   cdm::AudioFrames* audio_frames)
 {
+  std::lock_guard<std::mutex> lock(decrypt_mutex_);
   return cdm_->DecryptAndDecodeSamples(encrypted_buffer, audio_frames);
 }
 

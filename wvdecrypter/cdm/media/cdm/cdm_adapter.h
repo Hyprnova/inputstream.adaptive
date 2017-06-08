@@ -178,7 +178,7 @@ private:
 
   std::string cdm_base_path_;
   CdmAdapterClient *client_;
-  std::mutex client_mutex_;
+  std::mutex client_mutex_, decrypt_mutex_;
 
   std::string key_system_;
   CdmConfig cdm_config_;

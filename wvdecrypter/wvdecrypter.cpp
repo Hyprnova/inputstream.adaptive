@@ -224,7 +224,7 @@ public:
   WV_CencSingleSampleDecrypter(WV_DRM &drm, AP4_DataBuffer &pssh);
   ~WV_CencSingleSampleDecrypter();
 
-  const SSD_DECRYPTER::SSD_CAPS &GetCapabilities(const uint8_t* key, uint32_t media);
+  void GetCapabilities(const uint8_t* key, uint32_t media, SSD_DECRYPTER::SSD_CAPS &caps);
   virtual const char *GetSessionId() override;
   void SetSession(const char* session, uint32_t session_size, const uint8_t *data, size_t data_size)
   {
@@ -238,8 +238,10 @@ public:
     keys_.back().keyid = std::string((const char*)data, data_size);
     keys_.back().status = static_cast<cdm::KeyStatus>(status);
   }
+  bool HasKeyId(const uint8_t *keyid);
 
-  virtual AP4_Result SetFragmentInfo(AP4_UI32 pool_id, const AP4_UI08 *key, const AP4_UI08 nal_length_size, AP4_DataBuffer &annexb_sps_pps)override;
+  virtual AP4_Result SetFragmentInfo(AP4_UI32 pool_id, const AP4_UI08 *key, const AP4_UI08 nal_length_size,
+    AP4_DataBuffer &annexb_sps_pps, AP4_UI32 flags)override;
   virtual AP4_UI32 AddPool() override;
   virtual void RemovePool(AP4_UI32 poolid) override;
 
@@ -277,16 +279,18 @@ private:
   };
   std::vector<WVSKEY> keys_;
 
-  unsigned int max_subsample_count_;
-  cdm::SubsampleEntry *subsample_buffer_;
+  AP4_UI16 hdcp_version_;
+  AP4_UI32 hdcp_limit_;
+
+  unsigned int max_subsample_count_decrypt_, max_subsample_count_video_;
+  cdm::SubsampleEntry *subsample_buffer_decrypt_, *subsample_buffer_video_;
   AP4_DataBuffer decrypt_in_, decrypt_out_;
-  bool use_single_decrypt_;
-  SSD_DECRYPTER::SSD_CAPS decrypter_caps_;
 
   struct FINFO
   {
     const AP4_UI08 *key_;
     AP4_UI08 nal_length_size_;
+    AP4_UI16 decrypter_flags_;
     AP4_DataBuffer annexb_sps_pps_;
   };
   std::vector<FINFO> fragment_pool_;
@@ -440,12 +444,14 @@ WV_CencSingleSampleDecrypter::WV_CencSingleSampleDecrypter(WV_DRM &drm, AP4_Data
   : AP4_CencSingleSampleDecrypter(0)
   , drm_(drm)
   , pssh_(pssh)
-  , max_subsample_count_(0)
-  , subsample_buffer_(0)
-  , use_single_decrypt_(false)
+  , max_subsample_count_decrypt_(0)
+  , max_subsample_count_video_(0)
+  , subsample_buffer_decrypt_(0)
+  , subsample_buffer_video_(0)
   , promise_id_(0)
+  , hdcp_version_(99)
+  , hdcp_limit_(0)
 {
-  memset(&decrypter_caps_, 0, sizeof(decrypter_caps_));
   SetParentIsOwner(false);
 
   if (pssh.GetDataSize() > 256)
@@ -512,18 +518,21 @@ WV_CencSingleSampleDecrypter::~WV_CencSingleSampleDecrypter()
   if (!session_.empty())
     drm_.GetCdmAdapter()->CloseSession(++promise_id_, session_.data(), session_.size());
   drm_.removessd(this);
+  free(subsample_buffer_decrypt_);
+  free(subsample_buffer_video_);
 }
 
-const SSD_DECRYPTER::SSD_CAPS &WV_CencSingleSampleDecrypter::GetCapabilities(const uint8_t* key, uint32_t media)
+void WV_CencSingleSampleDecrypter::GetCapabilities(const uint8_t* key, uint32_t media, SSD_DECRYPTER::SSD_CAPS &caps)
 {
-  if (session_.empty())
-    return decrypter_caps_;
+  caps = { 0, hdcp_version_, hdcp_limit_ };
 
-  decrypter_caps_.flags = SSD_DECRYPTER::SSD_CAPS::SSD_SUPPORTS_DECODING;
-  use_single_decrypt_ = false;
+  if (session_.empty())
+    return;
+
+  caps.flags = SSD_DECRYPTER::SSD_CAPS::SSD_SUPPORTS_DECODING;
 
   if (keys_.empty())
-    return decrypter_caps_;
+    return;
 
   if (media == SSD_DECRYPTER::SSD_CAPS::SSD_MEDIA_VIDEO)
   {
@@ -531,12 +540,12 @@ const SSD_DECRYPTER::SSD_CAPS &WV_CencSingleSampleDecrypter::GetCapabilities(con
       if (!key || memcmp(k.keyid.data(), key, 16) == 0)
       {
         if (k.status != 0)
-          decrypter_caps_.flags |= (SSD_DECRYPTER::SSD_CAPS::SSD_SECURE_PATH | SSD_DECRYPTER::SSD_CAPS::SSD_ANNEXB_REQUIRED);
+          caps.flags |= (SSD_DECRYPTER::SSD_CAPS::SSD_SECURE_PATH | SSD_DECRYPTER::SSD_CAPS::SSD_ANNEXB_REQUIRED);
         break;
       }
   }
 
-  if (decrypter_caps_.flags == SSD_DECRYPTER::SSD_CAPS::SSD_SUPPORTS_DECODING)
+  if (caps.flags == SSD_DECRYPTER::SSD_CAPS::SSD_SUPPORTS_DECODING)
   {
     AP4_UI32 poolid(AddPool());
     fragment_pool_[poolid].key_ = key ? key : reinterpret_cast<const uint8_t*>(keys_.front().keyid.data());
@@ -554,26 +563,25 @@ const SSD_DECRYPTER::SSD_CAPS &WV_CencSingleSampleDecrypter::GetCapabilities(con
         encb[0] = 12;
         clearb[0] = 0;
         if (DecryptSampleData(poolid, in, out, iv, 1, clearb, encb) != AP4_SUCCESS)
-          decrypter_caps_.flags |= (SSD_DECRYPTER::SSD_CAPS::SSD_SECURE_PATH | SSD_DECRYPTER::SSD_CAPS::SSD_ANNEXB_REQUIRED);
+          caps.flags |= (SSD_DECRYPTER::SSD_CAPS::SSD_SECURE_PATH | SSD_DECRYPTER::SSD_CAPS::SSD_ANNEXB_REQUIRED);
         else
         {
-          use_single_decrypt_ = true;
-          decrypter_caps_.hdcpVersion = 99;
-          decrypter_caps_.hdcpLimit = 0;
+          caps.flags |= SSD_DECRYPTER::SSD_CAPS::SSD_SINGLE_DECRYPT;
+          caps.hdcpVersion = 99;
+          caps.hdcpLimit = 0;
         }
       }
       else
       {
-        decrypter_caps_.hdcpVersion = 99;
-        decrypter_caps_.hdcpLimit = 0;
+        caps.hdcpVersion = 99;
+        caps.hdcpLimit = 0;
       }
     }
     catch (...) {
-      decrypter_caps_.flags |= (SSD_DECRYPTER::SSD_CAPS::SSD_SECURE_PATH | SSD_DECRYPTER::SSD_CAPS::SSD_ANNEXB_REQUIRED);
+      caps.flags |= (SSD_DECRYPTER::SSD_CAPS::SSD_SECURE_PATH | SSD_DECRYPTER::SSD_CAPS::SSD_ANNEXB_REQUIRED);
     }
     RemovePool(poolid);
   }
-  return decrypter_caps_;
 }
 
 const char *WV_CencSingleSampleDecrypter::GetSessionId()
@@ -733,7 +741,7 @@ bool WV_CencSingleSampleDecrypter::SendSessionMessage()
             && strncmp(response.c_str() + tokens[i].start, jsonVals[1].c_str(), tokens[i].end - tokens[i].start) == 0)
             break;
         if (i < numTokens)
-          decrypter_caps_.hdcpLimit = atoi((response.c_str() + tokens[i + 1].start));
+          hdcp_limit_ = atoi((response.c_str() + tokens[i + 1].start));
       }
       // Find license key
       if (jsonVals.size() > 0)
@@ -785,7 +793,16 @@ SSMFAIL:
 |   WV_CencSingleSampleDecrypter::SetKeyId
 +---------------------------------------------------------------------*/
 
-AP4_Result WV_CencSingleSampleDecrypter::SetFragmentInfo(AP4_UI32 pool_id, const AP4_UI08 *key, const AP4_UI08 nal_length_size, AP4_DataBuffer &annexb_sps_pps)
+bool WV_CencSingleSampleDecrypter::HasKeyId(const uint8_t *keyid)
+{
+  if (keyid)
+    for (std::vector<WVSKEY>::const_iterator kb(keys_.begin()), ke(keys_.end()); kb != ke; ++kb)
+      if (kb->keyid.size() == 16 && memcmp(kb->keyid.c_str(), keyid, 16) == 0)
+        return true;
+  return false;
+}
+
+AP4_Result WV_CencSingleSampleDecrypter::SetFragmentInfo(AP4_UI32 pool_id, const AP4_UI08 *key, const AP4_UI08 nal_length_size, AP4_DataBuffer &annexb_sps_pps, , AP4_UI32 flags)
 {
   if (pool_id >= fragment_pool_.size())
     return AP4_ERROR_OUT_OF_RANGE;
@@ -793,6 +810,7 @@ AP4_Result WV_CencSingleSampleDecrypter::SetFragmentInfo(AP4_UI32 pool_id, const
   fragment_pool_[pool_id].key_ = key;
   fragment_pool_[pool_id].nal_length_size_ = nal_length_size;
   fragment_pool_[pool_id].annexb_sps_pps_.SetData(annexb_sps_pps.GetData(), annexb_sps_pps.GetDataSize());
+  fragment_pool_[pool_id].decrypter_flags_ = flags;
 
   return AP4_SUCCESS;
 }
@@ -836,7 +854,7 @@ AP4_Result WV_CencSingleSampleDecrypter::DecryptSampleData(AP4_UI32 pool_id,
 
   FINFO &fragInfo(fragment_pool_[pool_id]);
 
-  if(decrypter_caps_.flags & SSD_DECRYPTER::SSD_CAPS::SSD_SECURE_PATH) //we can not decrypt only
+  if(fragInfo.decrypter_flags_ & SSD_DECRYPTER::SSD_CAPS::SSD_SECURE_PATH) //we can not decrypt only
   {
     if (fragInfo.nal_length_size_ > 4)
     {
@@ -960,15 +978,15 @@ AP4_Result WV_CencSingleSampleDecrypter::DecryptSampleData(AP4_UI32 pool_id,
 
   // transform ap4 format into cmd format
   cdm::InputBuffer cdm_in;
-  if (subsample_count > max_subsample_count_)
+  if (subsample_count > max_subsample_count_decrypt_)
   {
-    subsample_buffer_ = (cdm::SubsampleEntry*)realloc(subsample_buffer_, subsample_count*sizeof(cdm::SubsampleEntry));
-    max_subsample_count_ = subsample_count;
+    subsample_buffer_decrypt_ = (cdm::SubsampleEntry*)realloc(subsample_buffer_decrypt_, subsample_count*sizeof(cdm::SubsampleEntry));
+    max_subsample_count_decrypt_ = subsample_count;
   }
 
   bool useSingleDecrypt(false);
 
-  if (use_single_decrypt_ && subsample_count > 1)
+  if ((fragInfo.decrypter_flags_ & SSD_DECRYPTER::SSD_CAPS::SSD_SINGLE_DECRYPT) != 0 && subsample_count > 1)
   {
     decrypt_in_.Reserve(data_in.GetDataSize());
     decrypt_in_.SetDataSize(0);
@@ -983,8 +1001,8 @@ AP4_Result WV_CencSingleSampleDecrypter::DecryptSampleData(AP4_UI32 pool_id,
     if (decrypt_in_.GetDataSize())
     {
       decrypt_out_.SetDataSize(decrypt_in_.GetDataSize());
-      subsample_buffer_[0].clear_bytes = 0;
-      subsample_buffer_[0].cipher_bytes = decrypt_in_.GetDataSize();
+      subsample_buffer_decrypt_[0].clear_bytes = 0;
+      subsample_buffer_decrypt_[0].cipher_bytes = decrypt_in_.GetDataSize();
       cdm_in.data = decrypt_in_.GetData();
       cdm_in.data_size = decrypt_in_.GetDataSize();
       cdm_in.num_subsamples = 1;
@@ -995,7 +1013,7 @@ AP4_Result WV_CencSingleSampleDecrypter::DecryptSampleData(AP4_UI32 pool_id,
   if (!useSingleDecrypt)
   {
     unsigned int i(0), numCipherBytes(0);
-    for (cdm::SubsampleEntry *b(subsample_buffer_), *e(subsample_buffer_ + subsample_count); b != e; ++b, ++i)
+    for (cdm::SubsampleEntry *b(subsample_buffer_decrypt_), *e(subsample_buffer_decrypt_ + subsample_count); b != e; ++b, ++i)
     {
       b->clear_bytes = bytes_of_cleartext_data[i];
       b->cipher_bytes = bytes_of_encrypted_data[i];
@@ -1018,7 +1036,7 @@ AP4_Result WV_CencSingleSampleDecrypter::DecryptSampleData(AP4_UI32 pool_id,
   cdm_in.iv_size = 16; //Always 16, see AP4_CencSingleSampleDecrypter declaration.
   cdm_in.key_id = fragInfo.key_;
   cdm_in.key_id_size = 16;
-  cdm_in.subsamples = subsample_buffer_;
+  cdm_in.subsamples = subsample_buffer_decrypt_;
 
   CdmBuffer buf((useSingleDecrypt) ? &decrypt_out_ : &data_out);
   CdmDecryptedBlock cdm_out;
@@ -1077,18 +1095,18 @@ SSD_DECODE_RETVAL WV_CencSingleSampleDecrypter::DecodeVideo(void* hostInstance, 
     }
 
     // transform ap4 format into cmd format
-    if (sample->numSubSamples > max_subsample_count_)
+    if (sample->numSubSamples > max_subsample_count_video_)
     {
-      subsample_buffer_ = (cdm::SubsampleEntry*)realloc(subsample_buffer_, sample->numSubSamples * sizeof(cdm::SubsampleEntry));
-      max_subsample_count_ = sample->numSubSamples;
+      subsample_buffer_video_ = (cdm::SubsampleEntry*)realloc(subsample_buffer_video_, sample->numSubSamples * sizeof(cdm::SubsampleEntry));
+      max_subsample_count_video_ = sample->numSubSamples;
     }
     cdm_in.num_subsamples = sample->numSubSamples;
-    cdm_in.subsamples = subsample_buffer_;
+    cdm_in.subsamples = subsample_buffer_video_;
 
     const uint16_t *clearBytes(sample->clearBytes);
     const uint32_t *cipherBytes(sample->cipherBytes);
 
-    for (cdm::SubsampleEntry *b(subsample_buffer_), *e(subsample_buffer_ + sample->numSubSamples); b != e; ++b, ++clearBytes, ++cipherBytes)
+    for (cdm::SubsampleEntry *b(subsample_buffer_video_), *e(subsample_buffer_video_ + sample->numSubSamples); b != e; ++b, ++clearBytes, ++cipherBytes)
     {
       b->clear_bytes = *clearBytes;
       b->cipher_bytes = *cipherBytes;
@@ -1208,15 +1226,22 @@ public:
       delete static_cast<WV_CencSingleSampleDecrypter*>(decrypter);
   }
 
-  virtual const SSD_DECRYPTER::SSD_CAPS &GetCapabilities(AP4_CencSingleSampleDecrypter* decrypter, const uint8_t *keyid, uint32_t media) override
+  virtual void GetCapabilities(AP4_CencSingleSampleDecrypter* decrypter, const uint8_t *keyid, uint32_t media, SSD_DECRYPTER::SSD_CAPS &caps) override
   {
     if (!decrypter)
     {
-      static const SSD_DECRYPTER::SSD_CAPS dummy_caps = { 0,0,0 };
-      return dummy_caps;
+      caps = { 0,0,0 };
+      return;
     }
 
-    return static_cast<WV_CencSingleSampleDecrypter*>(decrypter)->GetCapabilities(keyid, media);
+    static_cast<WV_CencSingleSampleDecrypter*>(decrypter)->GetCapabilities(keyid, media, caps);
+  }
+
+  virtual bool HasLicenseKey(AP4_CencSingleSampleDecrypter* decrypter, const uint8_t *keyid)
+  {
+    if (decrypter)
+      return static_cast<WV_CencSingleSampleDecrypter*>(decrypter)->HasKeyId(keyid);
+    return false;
   }
 
   virtual bool OpenVideoDecoder(AP4_CencSingleSampleDecrypter* decrypter, const SSD_VIDEOINITDATA *initData)
