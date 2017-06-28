@@ -168,6 +168,7 @@ public:
   size_t CreateSession(AP4_DataBuffer &pssh);
   void CloseSession(size_t sessionhandle);
   virtual const char *GetSessionId() override;
+  virtual bool HasLicenseKey(const uint8_t *keyid);
 
   virtual AP4_Result SetFragmentInfo(AP4_UI32 pool_id, const AP4_UI08 *key, const AP4_UI08 nal_length_size, AP4_DataBuffer &annexb_sps_pps, AP4_UI32 flags)override;
   virtual AP4_UI32 AddPool() override;
@@ -330,6 +331,13 @@ WV_CencSingleSampleDecrypter::~WV_CencSingleSampleDecrypter()
 const char *WV_CencSingleSampleDecrypter::GetSessionId()
 {
   return session_id_char_;
+}
+
+bool WV_CencSingleSampleDecrypter::HasLicenseKey(const uint8_t *keyid)
+{
+  // We work with one session for all streams.
+  // All license keys must be given in this key request
+  return true;
 }
 
 bool WV_CencSingleSampleDecrypter::ProvisionRequest()
@@ -790,6 +798,8 @@ public:
 
   virtual bool HasLicenseKey(AP4_CencSingleSampleDecrypter* decrypter, const uint8_t *keyid)
   {
+    if (decrypter)
+      return static_cast<WV_CencSingleSampleDecrypter*>(decrypter)->HasLicenseKey(keyid);
     return false;
   }
 
