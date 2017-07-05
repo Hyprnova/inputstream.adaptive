@@ -22,6 +22,7 @@
 #include "jsmn.h"
 #include "Ap4.h"
 #include <stdarg.h>
+#include <stdlib.h>
 #include <deque>
 #include <chrono>
 #include <thread>
@@ -123,10 +124,13 @@ WV_DRM::WV_DRM(WV_KEYSYSTEM ks, const char* licenseURL, const AP4_DataBuffer &se
     return;
   }
 
-  const char* deviceid="unknown";
-  AMediaDrm_getPropertyString(media_drm_, "deviceUniqueId", &deviceid);
+  const char* property;
+  AMediaDrm_getPropertyString(media_drm_, "deviceUniqueId", &property);
+  std::string strDeviceId(property? property : "unknown");
+  AMediaDrm_getPropertyString(media_drm_, "securityLevel", &property);
+  std::string strSecurityLevel(property? property : "unknown");
 
-  Log(SSD_HOST::LL_DEBUG, "Successful instanciated media_drm: %X, deviceid: %s", (unsigned int)media_drm_, deviceid);
+  Log(SSD_HOST::LL_DEBUG, "Successful instanciated media_drm: %X, deviceid: %s, security-level: %s", (unsigned int)media_drm_, strDeviceId.c_str(), strSecurityLevel.c_str());
 
   media_status_t status;
   if ((status = AMediaDrm_setOnEventListener(media_drm_, MediaDrmEventListener)) != AMEDIA_OK)
@@ -140,7 +144,7 @@ WV_DRM::WV_DRM(WV_KEYSYSTEM ks, const char* licenseURL, const AP4_DataBuffer &se
   if (license_url_.find('|') == std::string::npos)
   {
     if (key_system_ == WIDEVINE)
-      license_url_ += "|Content-Type=application%2Fx-www-form-urlencoded|widevine2Challenge=B{SSM}&includeHdcpTestKeyInLicense=false|JBlicense";
+      license_url_ += "|Content-Type=application%2Fx-www-form-urlencoded|widevine2Challenge=B{SSM}&includeHdcpTestKeyInLicense=false|JBlicense;hdcpEnforcementResolutionPixels";
     else
       license_url_ += "|Content-Type=text%2Fxml&SOAPAction=http%3A%2F%2Fschemas.microsoft.com%2FDRM%2F2007%2F03%2Fprotocols%2FAcquireLicense|R{SSM}|";
   }
@@ -190,6 +194,8 @@ public:
     // array of <subsample_count> integers. NULL if subsample_count is 0
     const AP4_UI32* bytes_of_encrypted_data);
 
+  void GetCapabilities(const uint8_t *keyid, uint32_t media, SSD_DECRYPTER::SSD_CAPS &caps);
+
 private:
   bool ProvisionRequest();
   bool SendSessionMessage(AMediaDrmByteArray &session_id, const uint8_t* key_request, size_t key_request_size);
@@ -211,6 +217,7 @@ private:
     AP4_DataBuffer annexb_sps_pps_;
   };
   std::vector<FINFO> fragment_pool_;
+  AP4_UI32 hdcp_limit_;
 };
 
 
@@ -223,6 +230,7 @@ WV_CencSingleSampleDecrypter::WV_CencSingleSampleDecrypter(WV_DRM &drm, AP4_Data
   , media_drm_(drm)
   , key_request_(nullptr)
   , key_request_size_(0)
+  , hdcp_limit_(0)
 {
   SetParentIsOwner(false);
 
@@ -338,6 +346,20 @@ bool WV_CencSingleSampleDecrypter::HasLicenseKey(const uint8_t *keyid)
   // We work with one session for all streams.
   // All license keys must be given in this key request
   return true;
+}
+
+void WV_CencSingleSampleDecrypter::GetCapabilities(const uint8_t *keyid, uint32_t media, SSD_DECRYPTER::SSD_CAPS &caps)
+{
+  caps = { SSD_DECRYPTER::SSD_CAPS::SSD_SECURE_PATH | SSD_DECRYPTER::SSD_CAPS::SSD_ANNEXB_REQUIRED, 0, hdcp_limit_ };
+
+  const char *property;
+  AMediaDrm_getPropertyString(media_drm_.GetMediaDrm(), "securityLevel", &property);
+  if (property && strcmp(property, "L1") == 0)
+  {
+    caps.hdcpLimit = 0; //No restriction
+    caps.flags |= SSD_DECRYPTER::SSD_CAPS::SSD_SECURE_DECODER;
+  }
+  Log(SSD_HOST::LL_DEBUG, "GetCapabilities: hdcpLimit: %u", caps.hdcpLimit);
 }
 
 bool WV_CencSingleSampleDecrypter::ProvisionRequest()
@@ -537,10 +559,28 @@ bool WV_CencSingleSampleDecrypter::SendSessionMessage(AMediaDrmByteArray &sessio
       jsmn_init(&jsn);
       int i(0), numTokens = jsmn_parse(&jsn, response.c_str(), response.size(), tokens, 100);
 
-      for (; i < numTokens; ++i)
-        if (tokens[i].type == JSMN_STRING && tokens[i].size == 1
-          && strncmp(response.c_str() + tokens[i].start, blocks[3].c_str() + 2, tokens[i].end - tokens[i].start) == 0)
-          break;
+      std::vector<std::string> jsonVals = split(blocks[3].c_str()+2, ';');
+
+      // Find HDCP limit
+      if (jsonVals.size() > 1)
+      {
+        for (; i < numTokens; ++i)
+          if (tokens[i].type == JSMN_STRING && tokens[i].size == 1 && jsonVals[1].size() == tokens[i].end - tokens[i].start
+            && strncmp(response.c_str() + tokens[i].start, jsonVals[1].c_str(), tokens[i].end - tokens[i].start) == 0)
+            break;
+        if (i < numTokens)
+          hdcp_limit_ = atoi((response.c_str() + tokens[i + 1].start));
+      }
+      // Find license key
+      if (jsonVals.size() > 0)
+      {
+        for (i = 0; i < numTokens; ++i)
+          if (tokens[i].type == JSMN_STRING && tokens[i].size == 1 && jsonVals[0].size() == tokens[i].end - tokens[i].start
+            && strncmp(response.c_str() + tokens[i].start, jsonVals[0].c_str(), tokens[i].end - tokens[i].start) == 0)
+            break;
+      }
+      else
+        i = numTokens;
 
       if (i < numTokens)
       {
@@ -793,7 +833,10 @@ public:
 
   virtual void GetCapabilities(AP4_CencSingleSampleDecrypter* decrypter, const uint8_t *keyid, uint32_t media, SSD_DECRYPTER::SSD_CAPS &caps) override
   {
-    caps = { SSD_DECRYPTER::SSD_CAPS::SSD_SECURE_PATH | SSD_DECRYPTER::SSD_CAPS::SSD_ANNEXB_REQUIRED, 0, 0 };
+    if (decrypter)
+      static_cast<WV_CencSingleSampleDecrypter*>(decrypter)->GetCapabilities(keyid,media,caps);
+    else
+      caps = { 0, 0, 0};
   }
 
   virtual bool HasLicenseKey(AP4_CencSingleSampleDecrypter* decrypter, const uint8_t *keyid)
