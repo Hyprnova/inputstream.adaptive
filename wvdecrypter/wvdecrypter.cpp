@@ -610,7 +610,7 @@ bool WV_CencSingleSampleDecrypter::SendSessionMessage()
   std::string::size_type insPos(blocks[0].find("{SSM}"));
   if (insPos != std::string::npos)
   {
-    if (insPos >= 0 && blocks[0][insPos - 1] == 'B')
+    if (insPos > 0 && blocks[0][insPos - 1] == 'B')
     {
       std::string msgEncoded = b64_encode(challenge_.GetData(), challenge_.GetDataSize(), true);
       blocks[0].replace(insPos - 1, 6, msgEncoded);
@@ -648,7 +648,7 @@ bool WV_CencSingleSampleDecrypter::SendSessionMessage()
     if (insPos != std::string::npos)
     {
       std::string::size_type sidSearchPos(insPos);
-      if (insPos >= 0)
+      if (insPos > 0)
       {
         if (blocks[2][insPos - 1] == 'B' || blocks[2][insPos - 1] == 'b')
         {
@@ -664,14 +664,14 @@ bool WV_CencSingleSampleDecrypter::SendSessionMessage()
       }
       else
       {
-        Log(SSD_HOST::LL_ERROR, "Unsupported License request template (body)");
+        Log(SSD_HOST::LL_ERROR, "Unsupported License request template (body / ?{SSM})");
         goto SSMFAIL;
       }
 
       insPos = blocks[2].find("{SID}", sidSearchPos);
       if (insPos != std::string::npos)
       {
-        if (insPos >= 0)
+        if (insPos > 0)
         {
           if (blocks[2][insPos - 1] == 'B' || blocks[2][insPos - 1] == 'b')
           {
@@ -683,7 +683,7 @@ bool WV_CencSingleSampleDecrypter::SendSessionMessage()
         }
         else
         {
-          Log(SSD_HOST::LL_ERROR, "Unsupported License request template (body)");
+          Log(SSD_HOST::LL_ERROR, "Unsupported License request template (body / ?{SID})");
           goto SSMFAIL;
         }
       }
@@ -1194,7 +1194,7 @@ public:
     cdmsession_ = nullptr;
   };
 
-  virtual const char *SelectKeySytem(const char* keySystem)
+  virtual const char *SelectKeySytem(const char* keySystem) override
   {
     if (strcmp(keySystem, "com.widevine.alpha"))
       return nullptr;
@@ -1202,7 +1202,7 @@ public:
     return "urn:uuid:EDEF8BA9-79D6-4ACE-A3C8-27DCD51D21ED";
   }
 
-  virtual bool OpenDRMSystem(const char *licenseURL, const AP4_DataBuffer &serverCertificate)
+  virtual bool OpenDRMSystem(const char *licenseURL, const AP4_DataBuffer &serverCertificate) override
   {
     cdmsession_ = new WV_DRM(licenseURL, serverCertificate);
 
@@ -1237,14 +1237,14 @@ public:
     static_cast<WV_CencSingleSampleDecrypter*>(decrypter)->GetCapabilities(keyid, media, caps);
   }
 
-  virtual bool HasLicenseKey(AP4_CencSingleSampleDecrypter* decrypter, const uint8_t *keyid)
+  virtual bool HasLicenseKey(AP4_CencSingleSampleDecrypter* decrypter, const uint8_t *keyid) override
   {
     if (decrypter)
       return static_cast<WV_CencSingleSampleDecrypter*>(decrypter)->HasKeyId(keyid);
     return false;
   }
 
-  virtual bool OpenVideoDecoder(AP4_CencSingleSampleDecrypter* decrypter, const SSD_VIDEOINITDATA *initData)
+  virtual bool OpenVideoDecoder(AP4_CencSingleSampleDecrypter* decrypter, const SSD_VIDEOINITDATA *initData) override
   {
     if (!decrypter || !initData)
       return false;
